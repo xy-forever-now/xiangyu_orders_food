@@ -42,20 +42,113 @@ const defaultMenuData = {
     ]
 };
 
-// 初始化菜单数据（从localStorage加载或使用默认数据）
-function loadMenuData() {
-    const savedData = localStorage.getItem('menuData');
-    if (savedData) {
-        menuData = JSON.parse(savedData);
-    } else {
-        menuData = JSON.parse(JSON.stringify(defaultMenuData));
-        saveMenuData();
+// 初始化菜单数据（从数据库加载或使用默认数据）
+async function loadMenuData() {
+    console.log('📥 开始加载菜单数据...');
+
+    if (!supabaseClient) {
+        console.warn('⚠️ Supabase未配置，使用本地存储');
+        loadMenuDataFromLocal();
+        return;
+    }
+
+    try {
+        // 从数据库加载所有商品
+        const { data: items, error } = await supabaseClient
+            .from('menu_items')
+            .select('*')
+            .order('category, id');
+
+        if (error) {
+            console.error('❌ 加载菜单数据失败:', error);
+            loadMenuDataFromLocal();
+            return;
+        }
+
+        console.log('📊 数据库返回的数据:', items);
+
+        if (!items || items.length === 0) {
+            console.log('📝 数据库中暂无商品数据，使用默认数据');
+            menuData = JSON.parse(JSON.stringify(defaultMenuData));
+            // 自动保存到数据库
+            await saveDefaultDataToDatabase();
+            return;
+        }
+
+        // 按分类组织数据
+        menuData = {};
+        items.forEach(item => {
+            const category = item.category;
+            if (!menuData[category]) {
+                menuData[category] = [];
+            }
+
+            menuData[category].push({
+                id: item.id,
+                name: item.name,
+                desc: item.description || '暂无描述',
+                img: item.emoji || '🍽️'
+            });
+        });
+
+        console.log('✅ 菜单数据加载成功，共', items.length, '个商品');
+        console.log('📊 分类数据:', Object.keys(menuData));
+    } catch (error) {
+        console.error('❌ 加载菜单数据出错:', error);
+        console.error('错误堆栈:', error.stack);
+        loadMenuDataFromLocal();
     }
 }
 
-// 保存菜单数据到localStorage
-function saveMenuData() {
-    localStorage.setItem('menuData', JSON.stringify(menuData));
+// 从本地存储加载数据（降级方案）
+function loadMenuDataFromLocal() {
+    const savedData = localStorage.getItem('menuData');
+    if (savedData) {
+        menuData = JSON.parse(savedData);
+        console.log('✅ 从本地存储加载菜单数据');
+    } else {
+        menuData = JSON.parse(JSON.stringify(defaultMenuData));
+        console.log('✅ 使用默认菜单数据');
+    }
+}
+
+// 保存默认数据到数据库
+async function saveDefaultDataToDatabase() {
+    if (!supabaseClient) return;
+
+    console.log('💾 正在保存默认数据到数据库...');
+
+    try {
+        const items = [];
+        for (const category in defaultMenuData) {
+            defaultMenuData[category].forEach(product => {
+                items.push({
+                    id: product.id,
+                    name: product.name,
+                    description: product.desc,
+                    emoji: product.img,
+                    category: category
+                });
+            });
+        }
+
+        const { error } = await supabaseClient
+            .from('menu_items')
+            .insert(items);
+
+        if (error) {
+            console.error('❌ 保存默认数据失败:', error);
+        } else {
+            console.log('✅ 默认数据保存成功');
+        }
+    } catch (error) {
+        console.error('❌ 保存默认数据出错:', error);
+    }
+}
+
+// 保存菜单数据到数据库（已废弃，数据实时同步）
+async function saveMenuData() {
+    console.log('📝 菜单数据已自动同步到数据库，无需手动保存');
 }
 
 // ==================== Supabase配置 ====================
@@ -97,7 +190,9 @@ async function init() {
     // 从数据库加载配置
     await loadConfigFromDB();
 
-    loadMenuData();
+    // 从数据库加载菜单数据
+    await loadMenuData();
+
     renderProducts(currentCategory);
     setupEventListeners();
     setupPushPlusConfig();
@@ -106,7 +201,36 @@ async function init() {
 // 渲染商品
 function renderProducts(category) {
     currentCategory = category;
+
+    // 检查分类数据是否存在
+    if (!menuData || !menuData[category]) {
+        console.error('❌ 分类数据不存在:', category);
+        console.log('当前menuData:', menuData);
+        productsGrid.innerHTML = `
+            <div style="text-align:center;padding:40px;color:#95a5a6;">
+                <div style="font-size:40px;margin-bottom:10px;">⚠️</div>
+                <div>分类「${category}」暂无商品数据</div>
+                <button onclick="syncDataFromCloud()" style="margin-top:15px;padding:10px 20px;background:#667eea;color:white;border:none;border-radius:8px;cursor:pointer;">
+                    🔄 同步数据
+                </button>
+            </div>
+        `;
+        return;
+    }
+
     const products = menuData[category];
+
+    // 检查是否是数组
+    if (!Array.isArray(products)) {
+        console.error('❌ 商品数据不是数组:', products);
+        productsGrid.innerHTML = `
+            <div style="text-align:center;padding:40px;color:#e74c3c;">
+                <div style="font-size:40px;margin-bottom:10px;">❌</div>
+                <div>商品数据格式错误</div>
+            </div>
+        `;
+        return;
+    }
 
     productsGrid.setAttribute('data-category', category);
     
@@ -179,6 +303,16 @@ function setupEventListeners() {
         renderCart();
     });
 
+    // 历史订单按钮
+    document.getElementById('orderHistoryBtn')?.addEventListener('click', () => {
+        showOrderHistoryModal();
+    });
+
+    // 同步数据按钮
+    document.getElementById('syncDataBtn')?.addEventListener('click', () => {
+        syncDataFromCloud();
+    });
+
     closeCartBtn.addEventListener('click', () => {
         cartModal.classList.remove('active');
     });
@@ -198,13 +332,23 @@ function setupEventListeners() {
 
         const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-        // 发送PushPlus微信通知
-        await sendPushPlusNotification(cart, itemCount);
+        // 生成订单号
+        const orderNo = generateOrderNo();
 
-        alert(`订单提交成功！\n共 ${itemCount} 件商品`);
-        cart = [];
-        updateCartCount();
-        cartModal.classList.remove('active');
+        // 保存订单到数据库
+        const saveSuccess = await saveOrderToDatabase(orderNo, cart, itemCount);
+
+        if (saveSuccess) {
+            // 发送PushPlus微信通知
+            await sendPushPlusNotification(cart, itemCount, orderNo);
+
+            alert(`✅ 订单提交成功！\n订单号：${orderNo}\n共 ${itemCount} 件商品`);
+            cart = [];
+            updateCartCount();
+            cartModal.classList.remove('active');
+        } else {
+            alert('❌ 订单保存失败，请重试');
+        }
     });
 }
 
@@ -429,40 +573,72 @@ function createAddProductModal() {
 }
 
 // 处理添加商品
-function handleAddProduct(e) {
+async function handleAddProduct(e) {
     e.preventDefault();
-    
+
     const name = document.getElementById('productName').value.trim();
     const desc = document.getElementById('productDesc').value.trim() || '暂无描述';
     const img = document.getElementById('productImage').value;
-    
+
     if (!name) {
         alert('请填写商品名称！');
         return;
     }
-    
+
     // 生成唯一ID
     const newId = generateProductId();
-    
-    // 添加新商品
-    const newProduct = {
-        id: newId,
-        name: name,
-        desc: desc,
-        img: img
-    };
-    
-    menuData[currentCategory].push(newProduct);
-    saveMenuData();
-    
+
+    console.log('🛒 开始添加商品:', { id: newId, name, category: currentCategory });
+
+    // 先保存到数据库
+    if (supabaseClient) {
+        try {
+            const { error } = await supabaseClient
+                .from('menu_items')
+                .insert([{
+                    id: newId,
+                    name: name,
+                    description: desc,
+                    emoji: img,
+                    category: currentCategory
+                }]);
+
+            if (error) {
+                console.error('❌ 保存商品到数据库失败:', error);
+                alert('❌ 添加失败：' + error.message);
+                return; // 数据库保存失败，不继续执行
+            }
+
+            console.log('✅ 商品保存到数据库成功');
+
+            // 数据库保存成功后，重新加载所有数据确保同步
+            await loadMenuData();
+
+            alert('✅ 商品添加成功！已同步到云端');
+        } catch (error) {
+            console.error('❌ 保存商品出错:', error);
+            alert('❌ 添加失败：' + error.message);
+            return;
+        }
+    } else {
+        // 降级到本地存储
+        const newProduct = {
+            id: newId,
+            name: name,
+            desc: desc,
+            img: img
+        };
+
+        menuData[currentCategory].push(newProduct);
+        alert('✅ 商品添加成功！（本地模式）');
+    }
+
     // 重新渲染商品列表
     renderProducts(currentCategory);
-    
+
     // 关闭弹窗并清空表单
     closeAddProductModal();
     addProductForm.reset();
-    
-    alert('商品添加成功！');
 }
 
 // 生成唯一商品ID
@@ -479,33 +655,93 @@ function generateProductId() {
 }
 
 // 删除商品
-function deleteProduct(productId) {
+async function deleteProduct(productId) {
     if (!confirm('确定要删除这个商品吗？')) {
         return;
     }
-    
-    // 查找并删除商品
-    for (const category in menuData) {
-        const index = menuData[category].findIndex(p => p.id === productId);
-        if (index !== -1) {
-            menuData[category].splice(index, 1);
-            saveMenuData();
-            renderProducts(currentCategory);
-            alert('商品已删除！');
+
+    console.log('🗑️ 开始删除商品:', productId);
+
+    // 先从数据库删除
+    if (supabaseClient) {
+        try {
+            const { error } = await supabaseClient
+                .from('menu_items')
+                .delete()
+                .eq('id', productId);
+
+            if (error) {
+                console.error('❌ 从数据库删除商品失败:', error);
+                alert('❌ 删除失败：' + error.message);
+                return;
+            }
+
+            console.log('✅ 商品从数据库删除成功');
+
+            // 数据库删除成功后，重新加载所有数据确保同步
+            await loadMenuData();
+
+            alert('✅ 商品已删除！已同步到云端');
+        } catch (error) {
+            console.error('❌ 删除商品出错:', error);
+            alert('❌ 删除失败：' + error.message);
             return;
         }
+    } else {
+        // 降级到本地删除
+        for (const category in menuData) {
+            const index = menuData[category].findIndex(p => p.id === productId);
+            if (index !== -1) {
+                menuData[category].splice(index, 1);
+                alert('✅ 商品已删除！（本地模式）');
+                break;
+            }
+        }
     }
+
+    // 重新渲染商品列表
+    renderProducts(currentCategory);
 }
 
 // 删除分类
-function deleteCategory(category) {
+async function deleteCategory(category) {
     if (!confirm(`确定要删除「${category}」分类及其所有商品吗？此操作不可恢复！`)) {
         return;
     }
-    
-    delete menuData[category];
-    saveMenuData();
-    
+
+    console.log('🗑️ 开始删除分类:', category);
+
+    // 先从数据库删除该分类的所有商品
+    if (supabaseClient) {
+        try {
+            const { error } = await supabaseClient
+                .from('menu_items')
+                .delete()
+                .eq('category', category);
+
+            if (error) {
+                console.error('❌ 从数据库删除分类商品失败:', error);
+                alert('❌ 删除失败：' + error.message);
+                return;
+            }
+
+            console.log('✅ 分类商品从数据库删除成功');
+
+            // 数据库删除成功后，重新加载所有数据确保同步
+            await loadMenuData();
+
+            alert(`✅ 「${category}」分类已删除！已同步到云端`);
+        } catch (error) {
+            console.error('❌ 删除分类商品出错:', error);
+            alert('❌ 删除失败：' + error.message);
+            return;
+        }
+    } else {
+        // 降级到本地删除
+        delete menuData[category];
+        alert(`✅ 「${category}」分类已删除！（本地模式）`);
+    }
+
     // 如果删除的是当前分类，切换到第一个可用分类
     if (currentCategory === category) {
         const categories = Object.keys(menuData);
@@ -524,13 +760,13 @@ function deleteCategory(category) {
             categoryTitle.textContent = '无分类';
         }
     }
-    
+
     // 移除对应的分类按钮
     const categoryBtn = document.querySelector(`.category-btn[data-category="${category}"]`);
     if (categoryBtn) {
         categoryBtn.remove();
     }
-    
+
     alert(`「${category}」分类已删除！`);
 }
 
@@ -784,7 +1020,7 @@ function showPushPlusConfigModal() {
 }
 
 // 发送PushPlus通知
-async function sendPushPlusNotification(cart, itemCount) {
+async function sendPushPlusNotification(cart, itemCount, orderNo = '') {
     console.log('🔍 检查推送配置...');
     console.log('当前Token状态:', pushPlusToken ? '已配置' : '未配置');
     console.log('Token长度:', pushPlusToken ? pushPlusToken.length : 0);
@@ -808,12 +1044,15 @@ async function sendPushPlusNotification(cart, itemCount) {
         return `${item.img} ${item.name} × ${item.quantity}`;
     }).join('<br>');
 
+    const orderNoText = orderNo ? `<br>📝 订单号：<strong>${orderNo}</strong>` : '';
+
     const message = `
 📦 <strong>新订单通知</strong>
 
 <hr style="border: 1px dashed #ccc;">
 
-📅 时间：${orderTime}<br>
+📅 时间：${orderTime}
+${orderNoText}
 🔢 总件数：${itemCount} 件
 
 <h3>📋 订单详情：</h3>
@@ -850,6 +1089,256 @@ ${orderDetails}
         }
     } catch (error) {
         console.error('❌ 微信推送发送出错：', error);
+    }
+}
+
+// ==================== 订单历史功能 ====================
+
+// 生成订单号
+function generateOrderNo() {
+    const now = new Date();
+    const dateStr = now.getFullYear().toString() +
+                   (now.getMonth() + 1).toString().padStart(2, '0') +
+                   now.getDate().toString().padStart(2, '0');
+    const timeStr = now.getHours().toString().padStart(2, '0') +
+                   now.getMinutes().toString().padStart(2, '0') +
+                   now.getSeconds().toString().padStart(2, '0');
+    const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+    return `ORD${dateStr}${timeStr}${randomStr}`;
+}
+
+// 保存订单到数据库
+async function saveOrderToDatabase(orderNo, cart, itemCount) {
+    console.log('💾 保存订单到数据库...', orderNo);
+
+    if (!supabaseClient) {
+        console.warn('⚠️ Supabase未配置，跳过数据库保存');
+        return true; // 降级处理，不影响订单提交
+    }
+
+    try {
+        const orderData = {
+            order_no: orderNo,
+            items: cart,
+            total_quantity: itemCount,
+            status: 'pending'
+        };
+
+        const { data, error } = await supabaseClient
+            .from('order_history')
+            .insert([orderData])
+            .select();
+
+        if (error) {
+            console.error('❌ 保存订单失败:', error);
+            return false;
+        }
+
+        console.log('✅ 订单保存成功:', data);
+        return true;
+    } catch (error) {
+        console.error('❌ 保存订单出错:', error);
+        return false;
+    }
+}
+
+// 显示订单历史弹窗
+async function showOrderHistoryModal() {
+    const historyModal = document.createElement('div');
+    historyModal.className = 'cart-modal active';
+    historyModal.id = 'orderHistoryModal';
+
+    historyModal.innerHTML = `
+        <div class="cart-content" style="max-width: 800px; max-height: 90vh;">
+            <div class="cart-header">
+                <h3>📋 历史订单</h3>
+                <button class="close-btn" id="closeOrderHistoryBtn">✕</button>
+            </div>
+            <div class="cart-items" style="padding: 0;">
+                <div id="orderHistoryContent" style="padding: 20px;">
+                    <div style="text-align: center; padding: 40px; color: #7f8c8d;">
+                        <div style="font-size: 40px; margin-bottom: 10px;">⏳</div>
+                        <div>正在加载订单历史...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(historyModal);
+
+    // 加载订单历史
+    await loadOrderHistory();
+
+    // 关闭按钮事件 - 关闭时自动同步商品数据
+    document.getElementById('closeOrderHistoryBtn').addEventListener('click', async () => {
+        historyModal.remove();
+        // 自动同步商品数据（静默同步，不显示提示）
+        await autoSyncData();
+    });
+
+    // 点击背景关闭 - 同样自动同步
+    historyModal.addEventListener('click', async (e) => {
+        if (e.target === historyModal) {
+            historyModal.remove();
+            // 自动同步商品数据（静默同步，不显示提示）
+            await autoSyncData();
+        }
+    });
+}
+
+// 加载订单历史
+async function loadOrderHistory() {
+    console.log('📥 加载订单历史...');
+
+    if (!supabaseClient) {
+        document.getElementById('orderHistoryContent').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #7f8c8d;">
+                <div style="font-size: 40px; margin-bottom: 10px;">⚠️</div>
+                <div>数据库未配置，无法加载订单历史</div>
+            </div>
+        `;
+        return;
+    }
+
+    try {
+        const { data, error } = await supabaseClient
+            .from('order_history')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+        if (error) {
+            console.error('❌ 加载订单历史失败:', error);
+            document.getElementById('orderHistoryContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #e74c3c;">
+                    <div style="font-size: 40px; margin-bottom: 10px;">❌</div>
+                    <div>加载失败：${error.message}</div>
+                </div>
+            `;
+            return;
+        }
+
+        console.log('✅ 订单历史加载成功:', data.length, '条记录');
+        displayOrderHistory(data);
+    } catch (error) {
+        console.error('❌ 加载订单历史出错:', error);
+    }
+}
+
+// 显示订单历史列表
+function displayOrderHistory(orders) {
+    const contentDiv = document.getElementById('orderHistoryContent');
+
+    if (!orders || orders.length === 0) {
+        contentDiv.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #7f8c8d;">
+                <div style="font-size: 40px; margin-bottom: 10px;">📭</div>
+                <div>暂无订单记录</div>
+            </div>
+        `;
+        return;
+    }
+
+    // 统计信息
+    const totalOrders = orders.length;
+    const totalItems = orders.reduce((sum, order) => sum + order.total_quantity, 0);
+
+    let html = `
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <strong>📊 统计信息</strong>：共 ${totalOrders} 个订单，${totalItems} 件商品
+        </div>
+        <div style="max-height: 60vh; overflow-y: auto;">
+    `;
+
+    orders.forEach(order => {
+        const orderTime = new Date(order.created_at).toLocaleString('zh-CN');
+        const statusText = getOrderStatusText(order.status);
+        const statusColor = getOrderStatusColor(order.status);
+
+        html += `
+            <div class="cart-item" style="margin-bottom: 15px;">
+                <div style="flex: 1;">
+                    <div style="font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
+                        📝 ${order.order_no}
+                    </div>
+                    <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 8px;">
+                        📅 ${orderTime}
+                    </div>
+                    <div style="font-size: 13px; color: #2c3e50; margin-bottom: 8px;">
+                        ${order.items.map(item => `${item.img} ${item.name} × ${item.quantity}`).join('、')}
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 13px; font-weight: 600; color: #667eea;">
+                            🔢 ${order.total_quantity} 件
+                        </span>
+                        <span style="font-size: 12px; padding: 4px 8px; border-radius: 4px; background: ${statusColor}; color: white;">
+                            ${statusText}
+                        </span>
+                    </div>
+                </div>
+                <button onclick="deleteOrder('${order.id}')" class="remove-btn" style="margin-left: 10px;">
+                    🗑️ 删除
+                </button>
+            </div>
+        `;
+    });
+
+    html += '</div>';
+    contentDiv.innerHTML = html;
+}
+
+// 获取订单状态文本
+function getOrderStatusText(status) {
+    const statusMap = {
+        'pending': '待处理',
+        'completed': '已完成',
+        'cancelled': '已取消'
+    };
+    return statusMap[status] || status;
+}
+
+// 获取订单状态颜色
+function getOrderStatusColor(status) {
+    const colorMap = {
+        'pending': '#f39c12',
+        'completed': '#27ae60',
+        'cancelled': '#e74c3c'
+    };
+    return colorMap[status] || '#95a5a6';
+}
+
+// 删除订单
+async function deleteOrder(orderId) {
+    if (!confirm('确定要删除这个订单记录吗？')) {
+        return;
+    }
+
+    if (!supabaseClient) {
+        alert('数据库未配置');
+        return;
+    }
+
+    try {
+        const { error } = await supabaseClient
+            .from('order_history')
+            .delete()
+            .eq('id', orderId);
+
+        if (error) {
+            console.error('❌ 删除订单失败:', error);
+            alert('删除失败：' + error.message);
+            return;
+        }
+
+        console.log('✅ 订单删除成功');
+        alert('✅ 订单已删除');
+
+        // 重新加载订单历史
+        await loadOrderHistory();
+    } catch (error) {
+        console.error('❌ 删除订单出错:', error);
+        alert('删除失败');
     }
 }
 
@@ -954,6 +1443,102 @@ function showAdminPasswordModal() {
             passwordModal.remove();
         }
     });
+}
+
+// 从云端同步数据
+async function syncDataFromCloud() {
+    console.log('🔄 开始从云端同步数据...');
+
+    if (!supabaseClient) {
+        alert('❌ 数据库未配置，无法同步');
+        return;
+    }
+
+    // 显示同步中提示
+    const syncBtn = document.getElementById('syncDataBtn');
+    const originalContent = syncBtn ? syncBtn.innerHTML : '';
+    if (syncBtn) {
+        syncBtn.innerHTML = '<span class="category-icon">⏳</span><span class="category-name">同步中...</span>';
+        syncBtn.disabled = true;
+    }
+
+    try {
+        // 重新加载所有数据
+        await loadMenuData();
+
+        // 检查数据是否加载成功
+        if (!menuData || Object.keys(menuData).length === 0) {
+            throw new Error('加载数据为空');
+        }
+
+        // 确保当前分类存在
+        if (!menuData[currentCategory]) {
+            const categories = Object.keys(menuData);
+            if (categories.length > 0) {
+                currentCategory = categories[0];
+                console.log('🔄 切换到可用分类:', currentCategory);
+            } else {
+                throw new Error('没有可用的分类');
+            }
+        }
+
+        // 刷新当前显示的商品列表
+        renderProducts(currentCategory);
+
+        console.log('✅ 数据同步成功');
+        alert('✅ 数据同步成功！已获取最新数据');
+    } catch (error) {
+        console.error('❌ 数据同步失败:', error);
+        console.error('错误详情:', error.stack);
+        alert('❌ 数据同步失败：' + error.message + '\n请检查控制台详细信息');
+    } finally {
+        // 恢复按钮状态
+        if (syncBtn) {
+            syncBtn.innerHTML = originalContent;
+            syncBtn.disabled = false;
+        }
+    }
+}
+
+// 自动同步数据（静默模式，不显示提示）
+async function autoSyncData() {
+    console.log('🔄 自动同步商品数据...');
+
+    if (!supabaseClient) {
+        console.warn('⚠️ 数据库未配置，跳过自动同步');
+        return;
+    }
+
+    try {
+        // 重新加载所有数据
+        await loadMenuData();
+
+        // 检查数据是否加载成功
+        if (!menuData || Object.keys(menuData).length === 0) {
+            console.warn('⚠️ 加载数据为空，跳过同步');
+            return;
+        }
+
+        // 确保当前分类存在
+        if (!menuData[currentCategory]) {
+            const categories = Object.keys(menuData);
+            if (categories.length > 0) {
+                currentCategory = categories[0];
+                console.log('🔄 切换到可用分类:', currentCategory);
+            } else {
+                console.warn('⚠️ 没有可用的分类');
+                return;
+            }
+        }
+
+        // 刷新当前显示的商品列表
+        renderProducts(currentCategory);
+
+        console.log('✅ 自动数据同步成功');
+    } catch (error) {
+        console.error('❌ 自动数据同步失败:', error);
+        // 静默失败，不显示错误提示
+    }
 }
 
 // 页面加载完成后添加配置按钮
