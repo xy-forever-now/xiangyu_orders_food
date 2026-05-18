@@ -332,17 +332,26 @@ function setupEventListeners() {
 
         const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
+        // 获取订单备注
+        const remarkInput = document.getElementById('orderRemark');
+        const remark = remarkInput ? remarkInput.value.trim() : '';
+
         // 生成订单号
         const orderNo = generateOrderNo();
 
         // 保存订单到数据库
-        const saveSuccess = await saveOrderToDatabase(orderNo, cart, itemCount);
+        const saveSuccess = await saveOrderToDatabase(orderNo, cart, itemCount, remark);
 
         if (saveSuccess) {
             // 发送PushPlus微信通知
-            await sendPushPlusNotification(cart, itemCount, orderNo);
+            await sendPushPlusNotification(cart, itemCount, orderNo, remark);
 
-            alert(`✅ 订单提交成功！\n订单号：${orderNo}\n共 ${itemCount} 件商品`);
+            // 清空备注输入框
+            if (remarkInput) {
+                remarkInput.value = '';
+            }
+
+            alert(`✅ 订单提交成功！\n订单号：${orderNo}\n共 ${itemCount} 件商品${remark ? '\n备注：' + remark : ''}`);
             cart = [];
             updateCartCount();
             cartModal.classList.remove('active');
@@ -1020,7 +1029,7 @@ function showPushPlusConfigModal() {
 }
 
 // 发送PushPlus通知
-async function sendPushPlusNotification(cart, itemCount, orderNo = '') {
+async function sendPushPlusNotification(cart, itemCount, orderNo = '', remark = '') {
     console.log('🔍 检查推送配置...');
     console.log('当前Token状态:', pushPlusToken ? '已配置' : '未配置');
     console.log('Token长度:', pushPlusToken ? pushPlusToken.length : 0);
@@ -1045,6 +1054,7 @@ async function sendPushPlusNotification(cart, itemCount, orderNo = '') {
     }).join('<br>');
 
     const orderNoText = orderNo ? `<br>📝 订单号：<strong>${orderNo}</strong>` : '';
+    const remarkText = remark ? `<br><br>📋 <strong>备注：</strong><br>${remark}` : '';
 
     const message = `
 📦 <strong>新订单通知</strong>
@@ -1057,6 +1067,7 @@ ${orderNoText}
 
 <h3>📋 订单详情：</h3>
 ${orderDetails}
+${remarkText}
     `;
 
     const title = `🍽️ 雨膳房 - 新订单 (${itemCount}件)`;
@@ -1108,7 +1119,7 @@ function generateOrderNo() {
 }
 
 // 保存订单到数据库
-async function saveOrderToDatabase(orderNo, cart, itemCount) {
+async function saveOrderToDatabase(orderNo, cart, itemCount, remark = '') {
     console.log('💾 保存订单到数据库...', orderNo);
 
     if (!supabaseClient) {
@@ -1121,6 +1132,7 @@ async function saveOrderToDatabase(orderNo, cart, itemCount) {
             order_no: orderNo,
             items: cart,
             total_quantity: itemCount,
+            remark: remark,
             status: 'pending'
         };
 
@@ -1268,6 +1280,9 @@ function displayOrderHistory(orders) {
                     <div style="font-size: 13px; color: #2c3e50; margin-bottom: 8px;">
                         ${order.items.map(item => `${item.img} ${item.name} × ${item.quantity}`).join('、')}
                     </div>
+                    ${order.remark ? `<div style="font-size: 12px; color: #667eea; margin-bottom: 8px; padding: 6px 8px; background: #f0f3ff; border-radius: 4px;">
+                        📋 备注：${order.remark}
+                    </div>` : ''}
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 13px; font-weight: 600; color: #667eea;">
                             🔢 ${order.total_quantity} 件

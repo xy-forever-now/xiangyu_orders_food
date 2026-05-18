@@ -72,6 +72,15 @@
                 <!-- 购物车商品将通过JavaScript动态生成 -->
             </div>
             <div class="cart-footer">
+                <!-- 添加备注输入框 -->
+                <div style="margin-bottom: 15px;">
+                    <label for="orderRemark" style="display: block; font-size: 14px; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">
+                        📝 订单备注：
+                    </label>
+                    <textarea id="orderRemark" placeholder="请输入订单备注（选填，如：少冰、微糖、不加冰等）"
+                              style="width: 100%; padding: 12px; border: 2px solid #ecf0f1; border-radius: 8px; font-size: 14px; font-family: inherit; resize: vertical; min-height: 60px;"
+                              rows="3"></textarea>
+                </div>
                 <button class="checkout-btn" id="checkoutBtn">提交订单</button>
             </div>
         </div>
